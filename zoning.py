@@ -10,8 +10,8 @@ import numpy.linalg as la
 from scipy.misc import imsave
 import scipy.cluster.vq as vq
 import scipy.stats as st
+import scipy.ndimage as nd
 
-    
 def cube2flat(iData):
     '''reshape 3D cube of data into 2D matrix:
     (rows - number of layers in 3D, columns - all pixels in each layer)'''
@@ -20,13 +20,13 @@ def cube2flat(iData):
     #find indeces of valid data (data are not nan on ALL records)
     notNanDataI = np.isfinite(iData.sum(axis=0))
     return iData, notNanDataI
-    
-    
-def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False):
+
+
+def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False, percentile=0.1):
     '''Run principal component analysis on 3D cube of time series'''
     print 'Run PCA'
     records, height, width = iData.shape
-    
+
     #append X,Y grids
     if addXYGrid:
         yGrid, xGrid = np.meshgrid(np.arange(0, width), np.arange(0, height))
@@ -36,43 +36,87 @@ def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False):
         iData = np.append(iData, xGrid, 0)
         records, height, width = iData.shape
 
+    # clip input data to the given percentile
+    for i in range(records):
+        gpi = np.isfinite(iData[i, :, :])
+        vmin = np.percentile(iData[i, :, :][gpi], percentile)
+        vmax = np.percentile(iData[i, :, :][gpi], 100-percentile)
+        iData[i, :, :][iData[i, :, :] < vmin] = vmin
+        iData[i, :, :][iData[i, :, :] > vmax] = vmax
+
     #reshape 3D cube of data into 2D matrix and get indeces of valid pixels
     iData, notNanDataI = cube2flat(iData)
     #perform PCA on valid data
     pcaData = PCA(iData[:, notNanDataI].astype('f8').T)
+    iData = None
     #create and fill output 2D matrix with PCA values for valid pixels
     oData = np.zeros((pcNumber, width*height), 'f4') + np.nan
     oData[:, notNanDataI] = pcaData.Y.T[0:pcNumber, :]
     #reshape 2D into 3D with individual PCAs in each layer
     oData = oData.reshape(pcNumber, height, width)
-    
+
     # visualize PC variance
-    plt.plot(pcaData.fracs, 'o-')
+    plt.semilogy(pcaData.fracs, 'o-')
     plt.title('variance of PC')
     plt.savefig(oPrefix + '_pca_var.png')
     plt.close()
-    
+
     #visualize individual PCs
     for pcn in range(0, pcNumber):
+        gpi = np.isfinite(oData[pcn, :, :])
+        vmin = np.percentile(oData[pcn, :, :][gpi], percentile)
+        vmax = np.percentile(oData[pcn, :, :][gpi], 100-percentile)
+        oData[pcn, :, :][oData[pcn, :, :] < vmin] = vmin
+        oData[pcn, :, :][oData[pcn, :, :] > vmax] = vmax
         plt.imsave('%spca%03d.png' % (oPrefix, pcn), oData[pcn, :, :])
-    
-    #visualize  3 PCs as RGB
-    vData = np.array(oData[0:3, :, :])
-    vData[np.isnan(vData)] = 0
-    imsave(oPrefix + 'pca123.png', vData)
+
+    #visualize  1,2,3 PCs as RGB
+    cube2rgb(oPrefix + 'pca123.png', oData[0:3, :, :])
+
+    #visualize 4,5,6 PCs as RGB
+    if pcNumber >= 6:
+        cube2rgb(oPrefix + 'pca456.png', oData[3:6, :, :])
+
+    np.save(oPrefix + 'pca.npy', oData)
 
     return oData
-    
-    
-def kmeans(iData, clustNumber, oPrefix, norm=False):
+
+def cube2rgb(oFileName, iData, maxVal=3):
+    vData = np.array(iData)
+    vData[np.isnan(vData)] = 0
+    vData[vData < -maxVal] = -maxVal
+    vData[vData > maxVal] = maxVal
+    imsave(oFileName, vData)
+
+
+def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False):
     '''Perform k-means cluster analysis and return MAP of zones'''
     print 'Run K-Means'
-    
+
+
+    # get shape
     height, width = iData.shape[1:3]
+
+    #append X,Y grids
+    if addXYGrid:
+        yGrid, xGrid = np.meshgrid(np.arange(0, width), np.arange(0, height))
+        yGrid = (yGrid - yGrid.mean()) / yGrid.std()
+        xGrid = (xGrid - xGrid.mean()) / xGrid.std()
+        yGrid.shape = (1, height, width)
+        xGrid.shape = (1, height, width)
+        iData = np.append(iData, yGrid, 0)
+        iData = np.append(iData, xGrid, 0)
+        records, height, width = iData.shape
+
+
+    # mask out-of-roi
+    mask = iData[0]==0
+
     #reshape 3D cube of data into 2D matrix and get indeces of valid pixels
     iData, notNanDataI = cube2flat(iData)
+
+    #center and norm
     if norm:
-        #center and norm
         iDataMean = iData[:, notNanDataI].mean(axis=1)
         iDataStd  = iData[:, notNanDataI].std(axis=1)
         iData = np.subtract(iData.T, iDataMean).T
@@ -87,26 +131,28 @@ def kmeans(iData, clustNumber, oPrefix, norm=False):
     zoneMap = np.zeros(width*height) + np.nan
     zoneMap[notNanDataI] = labelVec
     zoneMap = zoneMap.reshape(height, width)
-    
+    zoneMap[mask] = np.nan
+
     #visualize map of zones
     plt.imsave(oPrefix + 'zones.png', zoneMap)
-    
-    return zoneMap
-   
 
-def timeseries(iData, zoneMap):
+    # save to numpy file
+    np.save(oPrefix + 'zones.npy', zoneMap)
+
+    return zoneMap
+
+
+def timeseries(iData, zoneMap, std=None):
     '''
     Make zone-wise averaging of input data
     input: 3D matrix(Layers x Width x Height) and map of zones (W x H)
-    output: 2D matrices(L x WH) with mean and std 
+    output: 2D matrices(L x WH) with mean and std
     '''
     #reshape input cube into 2D matrix
     r, h, w = iData.shape
     iData, notNanDataI = cube2flat(iData)
-    #get unique values of labels
-    uniqZones = np.unique(zoneMap)
-    # leave only not-nan
-    uniqZones = uniqZones[~np.isnan(uniqZones)]
+    #get unique values of not-nan labels
+    uniqZones = np.unique(zoneMap[np.isfinite(zoneMap)])
     zoneNum = np.zeros((r, uniqZones.size))
     zoneMean = np.zeros((r, uniqZones.size))
     zoneStd = np.zeros((r, uniqZones.size))
@@ -118,10 +164,16 @@ def timeseries(iData, zoneMap):
             zoneNum[:, i] = zi
             zoneMean[:, i] = st.nanmean(zoneData, axis=1)
             zoneStd[:, i] = st.nanstd(zoneData, axis=1)
-        
+            if std is not None:
+                # filter out of maxSTD values
+                outliers = (np.abs(zoneData.T - zoneMean[:, i]) > zoneStd[:, i] * std).T
+                zoneData[outliers] = np.nan
+                zoneMean[:, i] = st.nanmean(zoneData, axis=1)
+                zoneStd[:, i] = st.nanstd(zoneData, axis=1)
+
     return zoneMean, zoneStd, zoneNum
-    
-    
+
+
 def hotelling(data1, data2):
     '''
     Estimate Multivariate Student T2 test (Hotelling test)
@@ -136,7 +188,7 @@ def hotelling(data1, data2):
     mean2 = data2.mean(axis=1)
     cov2 = np.cov(data2)
     n2 = data2.shape[1]
-    
+
     #calculate total covariance (COV)
     cov12 = (n1*cov1 + n2*cov2)
     #perfrom test (m1 - m2)' x COV x (m1 - m2)
@@ -147,7 +199,7 @@ def hotelling(data1, data2):
     #for n1+n1 > 100, t2>3 gives significat difference with p=0.01
     return t2
 
-    
+
 def t2_test(iData, zoneMap):
     '''Build matrix of pairwise T2-test of zones'''
     #reshape input cube into 2D matrix
@@ -176,36 +228,48 @@ def t2_test(iData, zoneMap):
                 hotel = np.nan
 
             tMatrix[zi1, zi2] = hotel
-    
+
     return tMatrix
-    
-def plot_timeseries(iData, iDate, iDataStd=None, vData=None, figFileName=None, monthInt=1, figSize=(6,6), dpi=150, style='o-'):
-    '''Make nice plots of timeseries with labels
+
+def plot_timeseries(iData, iDate, iDataStd=None, vData=None,
+                    figFileName=None, monthInt=1, figSize=(6,6),
+                    dpi=150, style='o-',
+                    legend=None, title=None, dateFormat='%m.%y',
+                    labels=None):
+    '''Make nice plots of timeseries with legend and labels
     input:
     iData - 2D matrix (WIDTH-number of zones, HEIGHT-number
     of time steps)
     iDate - vector of dates (list of datetime objects)
     iDataStd - matrix of standard deviations (optional)
     '''
-    
+
     #set locations and format of X-laxis tics
     months = mdates.MonthLocator(interval=monthInt)
-    monthsFmt = mdates.DateFormatter('%m.%y')
+    monthsFmt = mdates.DateFormatter(dateFormat)
     #plot all values
     fig = plt.figure(figsize=figSize, dpi=dpi)
     ax = fig.add_subplot(111)
     print iData.shape
-    
+
     #get the same colors as in the zone map
     cmap = cm.ScalarMappable(cmap='jet')
     colors = cmap.to_rgba(np.linspace(0, 1, iData.shape[1]+1))
-    
+
     for zn in range(0, iData.shape[1]):
         if vData is None:
             if iDataStd is None:
                 ax.plot(iDate, iData[:, zn], style, color=(colors[zn+1, :3]))
             else:
-                ax.errorbar(iDate, iData[:, zn], iDataStd[:, zn], fmt='o-', color=(colors[zn+1, :3]))
+                ax.errorbar(iDate, iData[:, zn], iDataStd[:, zn], fmt=style, color=(colors[zn+1, :3]))
+            if labels is not None:
+                #import ipdb; ipdb.set_trace()
+                maxI = np.argmax(iData[:, zn])
+                ax.text(iDate[maxI], iData[maxI, zn], labels[zn],
+                        color=(colors[zn+1, :3]),
+                        bbox=dict(facecolor='white',
+                                    alpha=0.9,
+                                    linewidth=0))
         else:
             X = np.arange(0, iData.shape[0])
             Y = zn
@@ -218,11 +282,19 @@ def plot_timeseries(iData, iDate, iDataStd=None, vData=None, figFileName=None, m
     ax.xaxis.set_major_locator(months)
     ax.xaxis.set_major_formatter(monthsFmt)
     fig.autofmt_xdate()
-    
+
     if vData is not None:
         ax.set_xlim(-1, iData.shape[0]+1)
         ax.set_ylim(-1, iData.shape[1]+1)
-    
+
+    if legend is not None and len(legend)==iData.shape[1]:
+        plt.legend(legend)
+
+    if title is not None:
+        plt.title(title)
+
+    plt.tight_layout(1.5)
+
     if figFileName is None:
         plt.show()
     else:
@@ -237,11 +309,11 @@ def average_data(iData, iDate, iYears, iMonths):
     vector of dates (list of datetime objects)
     list of Years
     list of months
-    
+
     output:
     one 2D matrix with averaged values in each pixel
     datetime of the first data in the average
-    
+
     usage:
     to find multi-annual monthly mean:
     averagedData = average_data(iData, iDate, [1998:2011], [7]):
@@ -250,7 +322,7 @@ def average_data(iData, iDate, iYears, iMonths):
     '''
     #list of tuples (year, month) for all input dates
     yearmonth = np.array([[y.year,y.month] for y in iDate])
-    
+
     r, h, w = iData.shape
     #create and fill temporary 3D matrix with data for averaging
     iData4aver = None
@@ -263,9 +335,97 @@ def average_data(iData, iDate, iYears, iMonths):
                 iData4aver = iDataSubset
             else:
                 iData4aver = np.append(iData4aver, iDataSubset, axis=0)
-            
+
     #average
     oDate = dt.date(iYears[0], iMonths[0], 1)
     if iMonths[0] > 10:
         oDate = dt.date(iYears[0]-1, iMonths[0], 1)
     return st.nanmean(iData4aver, axis=0).reshape(1,h,w), oDate
+
+
+def fill_gaps_nn(iData, size=2, badValue=None):
+    ''' Fill gaps using nearest neigbour interpolation '''
+
+    # convert data to 3D cube
+    if len(iData.shape) == 2:
+        procData = np.array([iData])
+        twoD = True
+    elif len(iData.shape) == 3:
+        procData = np.array(iData)
+        twoD = False
+    else:
+        raise Exception('Can handle only 2D or 3D data')
+
+    # fill gaps in each layer of the 3D cube
+    for i in range(len(procData)):
+        # Fill gaps:
+        # extrapolate valid values into 2 pixels border using nearest neighbour
+        #     get distance and indices of nearest neighbours
+        if badValue is None:
+            mask = np.isnan(procData[i])
+        else:
+            mask = procData[i] == badValue
+        dst, ind = nd.distance_transform_edt(mask,
+                                             return_distances=True,
+                                             return_indices=True)
+        #     erase row,col indeces further than 2 pixels
+        ind[0][dst > size] = 0
+        ind[1][dst > size] = 0
+        #    fill gaps
+        procData[i] = procData[i][tuple(ind)]
+
+    # if input data was 2D, return 2D also
+    if twoD:
+        procData = procData[0]
+
+    return procData
+
+def clean_zones(zones, minSegmentSize):
+    ''' Remove small zones and replace with nearest neigbour'''
+    # bad zones mask
+    badMask = zones == -1
+
+    # split multi-part zones
+    zonesAll = split_multi_zones(zones)
+
+    # find areas of all zones
+    zAllIndeces = np.unique(zonesAll)
+    zAllIndeces = zAllIndeces[zAllIndeces >= 0]
+    zAllAreas = nd.sum(np.ones_like(zones), zonesAll, zAllIndeces)
+
+    # set zones with small areas to -1
+    for zai in zAllIndeces[zAllAreas < minSegmentSize]:
+        zonesAll[zonesAll == zai] = -1
+
+    # fill small segments with values from nearest neighbours
+    invalid_cell_mask = zonesAll == -1
+    indices = nd.distance_transform_edt(invalid_cell_mask, return_distances=False, return_indices=True)
+    zonesClean = zones[tuple(indices)]
+
+    # mask bad values with 0
+    zonesClean[badMask] = -1
+
+    return zonesClean
+
+def split_multi_zones(zones):
+    ''' Split zones which have mulitiple disconnected parts into new zones '''
+    # indices of all non-zero zones
+    zIndices = np.unique(zones)
+    zIndices = zIndices[zIndices >= 0]
+    structure = np.ones((3,3)) # for labeling
+
+    # matrix for all spatially separate zones (-1 masks bad data)
+    zonesAll = np.zeros_like(zones) - 1
+    lblCounter = 0
+    for zi in zIndices:
+        # find zone
+        mask = zones == zi
+        # split spatially
+        labels, nl = nd.label(mask, structure)
+        # add unique numbers
+        labels[labels > 0] += lblCounter
+        # add zones to new matrix
+        zonesAll += labels
+        lblCounter += nl
+
+    return zonesAll

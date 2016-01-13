@@ -16,7 +16,7 @@ def cube2flat(iData):
     '''reshape 3D cube of data into 2D matrix:
     (rows - number of layers in 3D, columns - all pixels in each layer)'''
     r, h, w = iData.shape
-    iData = iData.reshape(r, h*w)
+    iData = iData.reshape(r, h*w).copy()
     #find indeces of valid data (data are not nan on ALL records)
     notNanDataI = np.isfinite(iData.sum(axis=0))
     return iData, notNanDataI
@@ -89,7 +89,7 @@ def cube2rgb(oFileName, iData, maxVal=3):
     imsave(oFileName, vData)
 
 
-def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False):
+def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False, xyFactor=1, iters=100):
     '''Perform k-means cluster analysis and return MAP of zones'''
     print 'Run K-Means'
 
@@ -108,22 +108,24 @@ def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False):
         iData = np.append(iData, xGrid, 0)
         records, height, width = iData.shape
 
-
     # mask out-of-roi
     mask = iData[0]==0
+
+    #center and norm
+    if norm:
+        iData = center_and_norm(iData)
+
+    # change significance of X,Y fields
+    if addXYGrid:
+        iData[-1] *= xyFactor
+        iData[-1] *= xyFactor
+
 
     #reshape 3D cube of data into 2D matrix and get indeces of valid pixels
     iData, notNanDataI = cube2flat(iData)
 
-    #center and norm
-    if norm:
-        iDataMean = iData[:, notNanDataI].mean(axis=1)
-        iDataStd  = iData[:, notNanDataI].std(axis=1)
-        iData = np.subtract(iData.T, iDataMean).T
-        iData = np.divide(iData.T, iDataStd).T
-
     #perform kmeans on valid data and return codebook
-    codeBook = vq.kmeans(iData[:, notNanDataI].astype('f8').T, clustNumber)[0]
+    codeBook = vq.kmeans(iData[:, notNanDataI].astype('f8').T, clustNumber, iters)[0]
     #perform vector quantization of input data uzing the codebook
     #return vector of labels (for each valid pixel)
     labelVec = vq.vq(iData[:, notNanDataI].astype('f8').T, codeBook)[0]+1
@@ -141,6 +143,19 @@ def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False):
 
     return zoneMap
 
+def center_and_norm(iData):
+    r, h, w = iData.shape
+    # reshape into 2D
+    iData, notNanDataI = cube2flat(iData)
+    # find mean, std
+    iDataMean = iData[:, notNanDataI].mean(axis=1)
+    iDataStd  = iData[:, notNanDataI].std(axis=1)
+    # center and norm
+    iData = np.subtract(iData.T, iDataMean).T
+    iData = np.divide(iData.T, iDataStd).T
+    # reshape into 3D
+    iData.shape = (r, h, w)
+    return iData
 
 def timeseries(iData, zoneMap, std=None):
     '''
@@ -429,3 +444,17 @@ def split_multi_zones(zones):
         lblCounter += nl
 
     return zonesAll
+
+def renumber_zones(zones, random=False):
+    # change nambering from 0 to n_zones
+    i = 0
+    renZones = np.zeros_like(zones)
+    rndIndeces = np.random.permutation(range(len(np.unique(zones))))
+    for zi in np.unique(zones):
+        newIndex = i
+        if random:
+            newIndex = rndIndeces[i]
+        renZones[zones == zi] = i
+        i += 1
+
+    return renZones

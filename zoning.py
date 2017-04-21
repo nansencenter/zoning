@@ -12,6 +12,8 @@ import scipy.cluster.vq as vq
 import scipy.stats as st
 import scipy.ndimage as nd
 
+from sklearn.cluster import KMeans
+
 def cube2flat(iData):
     '''reshape 3D cube of data into 2D matrix:
     (rows - number of layers in 3D, columns - all pixels in each layer)'''
@@ -48,7 +50,7 @@ def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False, percentile=0.1):
     iData, notNanDataI = cube2flat(iData)
     #perform PCA on valid data
     pcaData = PCA(iData[:, notNanDataI].astype('f8').T)
-    iData = None
+
     #create and fill output 2D matrix with PCA values for valid pixels
     oData = np.zeros((pcNumber, width*height), 'f4') + np.nan
     oData[:, notNanDataI] = pcaData.Y.T[0:pcNumber, :]
@@ -79,10 +81,13 @@ def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False, percentile=0.1):
 
     np.save(oPrefix + 'pca.npy', oData)
 
+    # create correlation matrix figure
+    corr_matrix(iData.reshape(records, height, width), oData, oPrefix)
+
     return oData
 
 def cube2rgb(oFileName, iData, maxVal=3):
-    vData = np.array(iData)
+    vData = np.dstack(iData)
     vData[np.isnan(vData)] = 0
     vData[vData < -maxVal] = -maxVal
     vData[vData > maxVal] = maxVal
@@ -125,10 +130,13 @@ def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False, xyFactor=1,
     iData, notNanDataI = cube2flat(iData)
 
     #perform kmeans on valid data and return codebook
-    codeBook = vq.kmeans(iData[:, notNanDataI].astype('f8').T, clustNumber, iters)[0]
+    #codeBook = vq.kmeans(iData[:, notNanDataI].astype('f8').T, clustNumber, iters)[0]
     #perform vector quantization of input data uzing the codebook
     #return vector of labels (for each valid pixel)
-    labelVec = vq.vq(iData[:, notNanDataI].astype('f8').T, codeBook)[0]+1
+    #labelVec = vq.vq(iData[:, notNanDataI].astype('f8').T, codeBook)[0]+1
+
+    labelVec = KMeans(n_clusters=clustNumber, n_jobs=-1).fit_predict(iData[:, notNanDataI].astype('f8').T)
+
     #create and fill MAP of zones
     zoneMap = np.zeros(width*height) + np.nan
     zoneMap[notNanDataI] = labelVec
@@ -177,14 +185,14 @@ def timeseries(iData, zoneMap, std=None):
         if not np.isnan(zi):
             zoneData = iData[:, zoneMap.flat == zi]
             zoneNum[:, i] = zi
-            zoneMean[:, i] = st.nanmean(zoneData, axis=1)
-            zoneStd[:, i] = st.nanstd(zoneData, axis=1)
+            zoneMean[:, i] = np.nanmean(zoneData, axis=1)
+            zoneStd[:, i] = np.nanstd(zoneData, axis=1)
             if std is not None:
                 # filter out of maxSTD values
                 outliers = (np.abs(zoneData.T - zoneMean[:, i]) > zoneStd[:, i] * std).T
                 zoneData[outliers] = np.nan
-                zoneMean[:, i] = st.nanmean(zoneData, axis=1)
-                zoneStd[:, i] = st.nanstd(zoneData, axis=1)
+                zoneMean[:, i] = np.nanmean(zoneData, axis=1)
+                zoneStd[:, i] = np.nanstd(zoneData, axis=1)
 
     return zoneMean, zoneStd, zoneNum
 
@@ -355,7 +363,7 @@ def average_data(iData, iDate, iYears, iMonths):
     oDate = dt.date(iYears[0], iMonths[0], 1)
     if iMonths[0] > 10:
         oDate = dt.date(iYears[0]-1, iMonths[0], 1)
-    return st.nanmean(iData4aver, axis=0).reshape(1,h,w), oDate
+    return np.nanmean(iData4aver, axis=0).reshape(1,h,w), oDate
 
 
 def fill_gaps_nn(iData, size=2, badValue=None):
@@ -458,3 +466,21 @@ def renumber_zones(zones, random=False):
         i += 1
 
     return renZones
+
+def corr_matrix(iData, pcs=None, oPrefix='', sqr=False, show=False, dpi=150):
+    if pcs is not None:
+        iData = np.vstack([iData, pcs])
+
+    iData, notNanDataI = cube2flat(iData)
+    r = np.corrcoef(iData[:, notNanDataI])
+    vmin = -1
+    if sqr:
+        r *= r
+        vmin = 0
+    plt.imshow(r, interpolation='nearest', vmin=vmin, vmax=1)
+    plt.savefig(oPrefix + '_pca_cor.png',
+                      bbox_inches='tight', pad_inches=0, dpi=dpi)
+    if show:
+        plt.show()
+
+    plt.close()

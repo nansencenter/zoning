@@ -24,7 +24,7 @@ def cube2flat(iData):
 
 def pca(iData, pcNumber=3, oPrefix='test', addXYGrid=False, percentile=0.1):
     '''Run principal component analysis on 3D cube of time series'''
-    print 'Run PCA'
+    print('Run PCA')
     records, height, width = iData.shape
 
     #append X,Y grids
@@ -91,7 +91,7 @@ def cube2rgb(oFileName, iData, maxVal=3):
 
 def kmeans(iData, clustNumber, oPrefix, norm=False, addXYGrid=False):
     '''Perform k-means cluster analysis and return MAP of zones'''
-    print 'Run K-Means'
+    print('Run K-Means')
 
 
     # get shape
@@ -156,22 +156,26 @@ def timeseries(iData, zoneMap, std=None):
     zoneNum = np.zeros((r, uniqZones.size))
     zoneMean = np.zeros((r, uniqZones.size))
     zoneStd = np.zeros((r, uniqZones.size))
+    zoneP16 = np.zeros((r, uniqZones.size))
+    zoneP84 = np.zeros((r, uniqZones.size))
+
     #in each zone: get all values from input data get not nan data average
     for i in range(uniqZones.size):
         zi = uniqZones[i]
         if not np.isnan(zi):
             zoneData = iData[:, zoneMap.flat == zi]
             zoneNum[:, i] = zi
-            zoneMean[:, i] = st.nanmean(zoneData, axis=1)
-            zoneStd[:, i] = st.nanstd(zoneData, axis=1)
             if std is not None:
                 # filter out of maxSTD values
                 outliers = (np.abs(zoneData.T - zoneMean[:, i]) > zoneStd[:, i] * std).T
                 zoneData[outliers] = np.nan
-                zoneMean[:, i] = st.nanmean(zoneData, axis=1)
-                zoneStd[:, i] = st.nanstd(zoneData, axis=1)
 
-    return zoneMean, zoneStd, zoneNum
+            zoneMean[:, i] = np.nanmean(zoneData, axis=1)
+            zoneStd[:, i] = np.nanstd(zoneData, axis=1)
+            zoneP16[:, i] = np.nanpercentile(zoneData, 16, axis=1)
+            zoneP84[:, i] = np.nanpercentile(zoneData, 84, axis=1)
+
+    return zoneMean, zoneStd, zoneNum, zoneP16, zoneP84
 
 
 def hotelling(data1, data2):
@@ -218,7 +222,7 @@ def t2_test(iData, zoneMap):
         #get non-nan data from all layers from the zone 1
         zoneData1 = iDataF[:, zoneMapFlat == zi1]
         for zi2 in uniqZones[zi1+1:]:
-            print 'zi1, zi2', zi1, zi2
+            print('zi1, zi2', zi1, zi2)
             #get non-nan data from all layers from the zone 2
             zoneData2 = iDataF[:, zoneMapFlat == zi2]
             try:
@@ -250,7 +254,7 @@ def plot_timeseries(iData, iDate, iDataStd=None, vData=None,
     #plot all values
     fig = plt.figure(figsize=figSize, dpi=dpi)
     ax = fig.add_subplot(111)
-    print iData.shape
+    print(iData.shape)
 
     #get the same colors as in the zone map
     cmap = cm.ScalarMappable(cmap='jet')
@@ -275,7 +279,7 @@ def plot_timeseries(iData, iDate, iDataStd=None, vData=None,
             Y = zn
             U = iData[:, zn]
             V = vData[:, zn]
-            print X, Y, U, V
+            print(X, Y, U, V)
             ax.quiver(X, Y, U, V, color=(colors[zn+1, :3]))
 
     # locate and format the tics
